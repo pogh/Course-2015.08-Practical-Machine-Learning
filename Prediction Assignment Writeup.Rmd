@@ -1,0 +1,207 @@
+---
+title: "Prediction Assignment Writeup"
+author: "pogh"
+date: "23. August 2015"
+output: html_document
+---
+
+##Background
+
+The data for this project comes from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+##Set up
+
+Let’s set up our environment:
+
+```{r message=FALSE}
+library(caret)
+library(plyr)
+library(reshape)
+
+set.seed(1234)
+```
+
+##Define Function
+
+We’ll need this function later on to work out how many predictors are correlated. 
+It takes a data matrix, works out the correlations between the columns,
+and removes the columns over a certain correlation threshold.
+
+```{r}
+getUncorrelatedDataFrame <- function(dataframe, outcomeVariableName, threshold) {
+
+    # takes a correlation matrix of the datafram and melts it, then sorts it (important for next step)
+    correlatedCols <- 
+        arrange(
+            melt(
+                as.matrix(
+                    cor(dataframe[, !(names(dataframe) %in% outcomeVariableName)])
+                    )
+                )
+            , abs(value)
+            )
+    
+    # remove every second row from the sorted set (since each column pair correlated with its partner)
+    sequence <- 1:nrow(correlatedCols)
+    correlatedCols <- correlatedCols[sequence%%2 == 1, ]
+    rm(sequence)
+    
+    # remove the columns over the threshold
+    correlatedCols <- as.character(correlatedCols[abs(correlatedCols$value) > threshold, c("X1")]) 
+    
+    # return the dataframe with only the correlated columns unter the threshold
+    return ( dataframe[, !(names(dataframe) %in% correlatedCols)] )
+}
+```
+
+##Pre-processing
+
+Let’s load our data:
+
+```{r}
+pmlTraining <- read.csv("pml-training.csv", na.strings = c("NA", ""))
+```
+
+Let’s work out how many columns are missing data.
+
+```{r}
+valueCounts <- as.data.frame(apply(pmlTraining, 2, function(x) sum(!is.na(x))))
+colnames(valueCounts) <- c("count")
+aggregate(valueCounts$count, list(valueCounts$count), length)
+```
+
+So we can see here, 100 columns are missing a lot of data.  Let’s remove these columns:
+
+```{r}
+emptyCols <- rownames(subset(valueCounts, count <  max(valueCounts)))
+pmlTraining <- pmlTraining[,!(names(pmlTraining) %in% emptyCols)]
+```
+
+We can also see that the first seven columns are description columns, so we can remove these too.
+
+```{r}
+pmlTraining <- pmlTraining[,!(names(pmlTraining) %in% colnames(pmlTraining[, 1:7]))]
+```
+
+Now we have our cleaned up dataset, let’s split it into a training and testing dataset.
+
+```{r}
+inTrain <- createDataPartition(y = pmlTraining$classe, p = 0.7, list = FALSE)
+training <- pmlTraining[inTrain,]
+testing <- pmlTraining[-inTrain,]
+```
+
+##Modeling
+
+Since we dealing with non-linear data and random forests is the learning method that wins all the Kaggel competitions, we’ll choose random forests as our model too.
+
+Since we’re not sure which columns are important, we try and remove correlated columns.  We’ll do this in a loop, first removing columns that are more than 10% correlated with another column, then building a model.  We’ll try again, removing columns that are more than 20% correlated with another column, then building a model, etc.  
+
+```{r}
+n = 10                              # At the end, we’ll have 10 models 
+models <- vector("list", n + 1)     # Let’s save all our models for later
+results <- data.frame(
+    predictors = integer(), 
+    accuracy = numeric()
+    )                               # Let’s save the results of the models for later
+```
+
+Let’s do the hard work:
+
+```{r warning = FALSE}
+startTime <- Sys.time()
+
+for(i in 1:n)
+{
+    correlation <- (1 - (n / 10)) + (i / 10)    # Correlation threshold of 10%, 20%, etc.
+    
+    pmlTraining2 <- getUncorrelatedDataFrame(
+            pmlTraining, 
+            "classe" , 
+            correlation)                        # Remove the correlated columns
+    
+    model <- train(
+        classe ~ ., 
+        method = "rf", 
+        data = pmlTraining2, 
+        ntree = 100)                            # Train our model
+    
+    models[[i]] <- model                        # Store our model and how many predictors we needed
+    results[i, "predictors"] <- length(pmlTraining2) - 1
+    rownames(results)[i] <- i
+    
+    cat(
+        i, 
+        "Correlation:", correlation * 100, "% ", 
+        "(", length(pmlTraining2) - 1, "Predictors )  ",
+        "Accuracy:", round(mean(model$results$Accuracy) * 1, 2) * 1, "%  ", 
+        "Time taken:", (Sys.time() - startTime), 
+        "\n")                                   # Feedback
+    
+    rm(model)                                   # Cleanup
+    rm(pmlTraining2)
+    rm(correlation)
+}
+```
+
+From the results, we can see we start getting pretty good results from as few as five predictors.
+
+##Cross Validation
+
+Let’s take our testing dataset and see how good our models are on unseen data, i.e. the testing set.
+
+```{r}
+for(i in 1:n)
+{
+    prediction <- predict(models[[i]], new = testing)
+    cm <- confusionMatrix(prediction, testing$classe)
+    results[i, "accuracy"] <- round(cm$overall["Accuracy"] * 100, 2)
+    rm(cm)
+    rm(prediction)
+}
+```
+
+Let’s sort our results by the accuracy on the testing set so we can pick the best one.
+
+```{r}
+results <- results[order(-results$accuracy), , drop = FALSE]
+results
+```
+
+Let’s take a look at our winning model:
+
+```{r}
+winningModel <- models[[as.numeric(rownames(results)[1])]]
+
+prediction <- predict(winningModel, new = testing)
+cm <- confusionMatrix(prediction, testing$classe)
+
+cm
+```
+
+##Conclusion
+
+Here are our stats for the winning model:
+
+```{r echo = FALSE}
+cat("Overall out of sample expected accuracy:", round((cm$overall["Accuracy"] * 100), 2), "%")
+cat("Overall out of sample expected error rate:", round((1 - cm$overall["Kappa"]) * 100, 2), "%")
+```
+
+##Project Submission
+
+```{r}
+pmlTesting <- read.csv("pml-testing.csv", na.strings = c("NA", ""))
+answers <- predict(winningModel, new = pmlTesting)
+
+for (i in 1:length(answers)) 
+{
+    filename = paste0("problem_id_", i, ".txt")
+    write.table(answers[i], file = filename, quote = FALSE, row.names = FALSE, col.names = FALSE)
+    rm(filename)
+}
+
+answers
+```
