@@ -1,3 +1,4 @@
-## Practical-Machine-Learning
+## Practical Machine Learning
+# Peer Assessments / Prediction Assignment Writeup
 
-[You can view my HTML file here](https://pogh.github.io/Practical-Machine-Learning/Prediction_Assignment_Writeup.html)
+You can view the HTML file directly by clicking [here](https://pogh.github.io/Practical-Machine-Learning/Prediction_Assignment_Writeup.html)
